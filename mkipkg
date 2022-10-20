@@ -1,0 +1,616 @@
+#!/bin/sh
+
+#########################################
+# Name: mkipkg
+#
+# Summary: make an ipkg using specified
+#          data and control files
+#
+# Description:
+#
+# Author: k. headley
+#
+# Copyright MBARI 2007
+# Copyright sndnvaps 2022
+#
+#########################################
+# url = https://github.com/lerolero/mbari-siam/blob/a1236ec5033811743bf51591ec4a07f9327e5cf4/shoreUtils/mkipkg
+#########################################
+# Script configuration defaults
+# casual users should not need to change
+# anything below this section
+#########################################
+# https://raymii.org/s/tutorials/Building_IPK_packages_by_hand.html
+#Folder structure & Data
+# The following folder structure is used for the package build. There is a main folder named packages, 
+# which has a subfolder for each machine based on the machines serial number. Under the machine folder there is a folder named after the package we're building (examplepackage),
+#  which has a control and data folder. The data folder contains the files that will be extracted on the filesystem and the control folder contains the pre and post scripts and some package information.
+# packages/serialnumber/
+# |-- ipkbuild
+# |   `-- example_package
+# |       |-- control
+# |       |   |-- control
+# |       |   |-- postinst
+# |       |   |-- preinst
+# |       |   `-- prerm
+# |       |-- data
+# |       |   |-- usr
+# |       |   |   `-- bin
+# |       |   |       `-- my_binary
+# |       |   `-- lib
+# |       |       `-- systemd
+# |       |           `-- system
+# |       |               `-- example_package.service
+# |       `-- debian-binary
+# `-- example_package_1.3.3.7_aarch64-cortex-a53.ipk
+#
+#
+BASE_DIR=`pwd`
+PACKAGE_DIR="."
+CONTROL_DIR="$PACKAGE_DIR/CONTROL"
+DATA_DIR="$PACKAGE_DIR/data"
+OUTPUT_DIR="$BASE_DIR"
+DEBIAN_BINARY_VER="2.0"
+DEBIAN_BINARY_NAME="debian-binary"
+TAR_OPTS=""
+
+#################################
+# Script variable initialization
+#################################
+VERBOSE="FALSE"
+
+#################################
+# Function Definitions
+#################################
+
+#################################
+# name: printUsage
+# description: print use message
+# args: none
+#################################
+printUsage(){
+    echo
+    echo "usage: `basename $0`"
+    echo "-v <version>   : debian binary version   [$DEBIAN_BINARY_VER]"
+    echo "-c <directory> : control directory       [$CONTROL_DIR]"
+    echo "-d <directory> : package directory       [$PACKAGE_DIR]"
+	echo "               : data directory          [$DATA_DIR]"
+    echo "-D <directory> : output directory        [$OUTPUT_DIR]"
+    echo "-n <name>      : package file name       [$IPKG_NAME]"
+    echo "-q             : quiet output            [$QUIET]"
+    echo "-V             : verbose output          [$VERBOSE]"
+    echo "-h             : print this help message"
+    echo
+}
+
+########################################
+# name: exitError
+# description: print use message
+# args:
+#     msg:        error message
+#     returnCode: exit status to return
+########################################
+exitError(){
+    echo >&2
+    echo "$1" >&2 
+    echo >&2
+    exit $2
+}
+
+########################################
+# name: vout
+# description: print verbose message
+# args:
+#     msg:        message
+########################################
+vout(){
+    if [ "$VERBOSE" == "TRUE" ]
+    then
+	echo "$1"
+    fi
+}
+
+########################################
+# name: checkFile
+# description: check for existence of file
+# args:
+#     filepath: path to file
+########################################
+checkFile(){
+    if [ ! -e "$1" ]
+    then
+	vout "file not found: `basename $1`"
+	return 1
+    fi
+    return 0
+}
+########################################
+# name: mkControl
+# description: create default control file
+# args: none
+#     
+########################################
+mkControl(){
+cat>$CONTROL_DIR/control<<EOF
+Package: $IPKG_NAME
+Section: Applications
+Priority: optional
+Version: 0.0
+Architecture: all
+Maintainer: noname <noname@nowhere.net>
+Depends: bash
+Description: default ipkg 
+Source: src.tar.gz
+EOF
+}
+########################################
+# name: mkPreinst
+# description: create default pre-install script
+# args: none
+#     
+########################################
+mkPreinst(){
+cat>$CONTROL_DIR/preinst<<EOF
+#!/bin/sh
+
+# pre-install script
+echo "$IPKG_NAME pre-install running..."
+exit 0
+EOF
+}
+########################################
+# name: mkPostinst
+# description: create default post-install script
+# args: none
+#     
+########################################
+mkPostinst(){
+cat>$CONTROL_DIR/postinst<<EOF
+#!/bin/sh
+
+# post-install script
+echo "$IPKG_NAME post-install running..."
+exit 0
+EOF
+}
+########################################
+# name: mkPrerm
+# description: create default pre-remove script
+# args: none
+#     
+########################################
+mkPrerm(){
+cat>$CONTROL_DIR/prerm<<EOF
+#!/bin/sh
+
+# pre-remove script
+echo "$IPKG_NAME pre-remove running..."
+exit 0
+EOF
+}
+########################################
+# name: mkPostrm
+# description: create default post-remove script
+# args: none
+#     
+########################################
+mkPostrm(){
+cat>$CONTROL_DIR/postrm<<EOF
+#!/bin/sh
+
+# pre-remove script
+echo "$IPKG_NAME post-remove running..."
+exit 0
+EOF
+}
+
+########################################
+# name: mkDirs
+# description: check directories and
+#              create missing ones
+# args: none
+#     
+########################################
+mkDirs(){
+    if [ ! -d "$OUTPUT_DIR" ]
+	then
+	mkdir $OUTPUT_DIR
+	if [ "$?" -ne "0" ]
+	    then
+	    exitError "could not create output directory ($OUTPUT_DIR)" 1
+	fi
+    fi
+    if [ ! -d "$PACKAGE_DIR" ]
+	then
+	mkdir $PACKAGE_DIR
+	if [ "$?" -ne "0" ]
+	    then
+	    exitError "could not create data directory ($PACKAGE_DIR)" 1
+	fi
+    fi
+
+    TMP_DIR="$OUTPUT_DIR/IPKG_BUILD.$$"
+    mkdir $TMP_DIR
+    if [ "$?" -ne "0" ]
+	then
+	    exitError "could not create temporary directory ($TMP_DIR)" 1
+    fi
+
+}
+
+########################################
+# name: mkControls
+# description: check control files and
+#              create missing defaults
+# args: none
+#     
+########################################
+mkControls(){
+    checkFile "$CONTROL_DIR/control"
+    if [ "$?" -ne "0" ]
+	then
+	mkControl
+    fi
+    
+    checkFile "$CONTROL_DIR/preinst"
+    if [ "$?" -ne "0" ]
+	then
+	mkPreinst
+    fi
+    checkFile "$CONTROL_DIR/postinst"
+    if [ "$?" -ne "0" ]
+	then
+	mkPostinst
+    fi
+    checkFile "$CONTROL_DIR/prerm"
+    if [ "$?" -ne "0" ]
+	then
+	mkPrerm
+    fi
+    checkFile "$CONTROL_DIR/postrm"
+    if [ "$?" -ne "0" ]
+	then
+	mkPostrm
+    fi
+
+    chown root:root $CONTROL_DIR/preinst $CONTROL_DIR/postinst 
+    chown root:root $CONTROL_DIR/prerm $CONTROL_DIR/postrm
+    chmod 775 $CONTROL_DIR/preinst $CONTROL_DIR/postinst
+    chmod 775 $CONTROL_DIR/prerm $CONTROL_DIR/postrm
+
+}
+
+
+########################################
+# name: mkPackage
+# description: create the ipkg
+# args: none
+#     
+########################################
+mkPackage(){
+
+# make debian binary version file
+cat>$TMP_DIR/$DEBIAN_BINARY_NAME<<EOF
+$DEBIAN_BINARY_VER
+EOF
+    
+# create control TAR file
+    tar -czf $TMP_DIR/control.tar.gz $TAR_OPTS -C $CONTROL_DIR  control preinst postinst prerm postrm
+
+# create data TAR file
+    tar -czf $TMP_DIR/data.tar.gz    $TAR_OPTS -C $DATA_DIR .
+    
+# set permissions/ownership
+    chown root:root $TMP_DIR/data.tar.gz $TMP_DIR/control.tar.gz $TMP_DIR/debian-binary
+
+# create ipkg file
+    tar -czf $OUTPUT_DIR/$IPKG_NAME $TAR_OPTS -C $TMP_DIR data.tar.gz control.tar.gz debian-binary
+}
+
+########################################
+# name: cleanUp
+# description: clear temporary files
+# args: none
+#     
+########################################
+cleanUp(){
+    rm -rf $TMP_DIR
+}
+
+########################################
+# name: validateSection
+# description: validate control file Section parameter
+# args: section value
+#     
+########################################
+validateSection(){
+    if [ "$1" == "Games" ];then
+	return 0;
+    fi
+    if [ "$1" == "Multimedia" ];then
+	return 0;
+    fi
+    if [ "$1" == "Communications" ];then
+	return 0;
+    fi
+    if [ "$1" == "Settings" ];then
+	return 0;
+    fi
+    if [ "$1" == "Utilies" ];then
+	return 0;
+    fi
+    if [ "$1" == "Applications" ];then
+	return 0;
+    fi
+    if [ "$1" == "Console" ];then
+	return 0;
+    fi
+    if [ "$1" == "Misc" ];then
+	return 0;
+    fi
+    return 1;
+}
+
+########################################
+# name: validatePriority
+# description: validate control file Priority parameter
+# args: priority value
+#     
+########################################
+validatePriority(){
+    if [ "$1" == "optional" ];then
+	return 0;
+    fi
+    if [ "$1" == "required" ];then
+	return 0;
+    fi
+    if [ "$1" == "important" ];then
+	return 0;
+    fi
+    if [ "$1" == "standard" ];then
+	return 0;
+    fi
+    if [ "$1" == "extra" ];then
+	return 0;
+    fi
+    return 1;
+}
+
+########################################
+# name: ipkg_extract_value
+# description: extract field value from control file entry
+# args: none
+#     
+########################################
+ipkg_extract_value() {
+	sed -e "s/^[^:]*:[[:space:]]*//"
+}
+
+########################################
+# name: required_field
+# description: extract control file entry
+# args: field
+#     
+########################################
+required_field() {
+	field=$1
+	value=`grep "^$field:" < $CONTROL_DIR/control | ipkg_extract_value`
+	if [ -z "$value" ]
+	    then
+	    echo "Error: $CONTROL_DIR/control is missing field $field ($REQ_ERR)" >&2
+	    return 1
+	fi
+	echo $value
+	return 0
+}
+
+########################################
+# name: checkSanity
+# description: validate control file
+# args: ipkg directory
+#     
+########################################
+checkSanity() {
+	local pkg_dir=$1
+
+	local owd=`pwd`
+	cd $pkg_dir
+
+	PKG_ERROR=0
+
+	large_uid_files=`find . -uid +99`
+	if [ -n "$large_uid_files" ] && [ -z "$QUIET" ]
+	    then
+		echo "Warning: The following files have a UID greater than 99. Consider chown to system user: "  >&2
+		ls -ld $large_uid_files
+		echo >&2
+	fi
+
+	pkg=`required_field Package`
+	[ "$?" -ne 0 ] && PKG_ERROR=1
+
+	#version=`required_field Version | sed 's/.*://;'`
+	version=`required_field Version`
+	[ "$?" -ne 0 ] && PKG_ERROR=1
+
+	arch=`required_field Architecture`
+	[ "$?" -ne 0 ] && PKG_ERROR=1
+
+	required_field Maintainer >/dev/null
+	[ "$?" -ne 0 ] && PKG_ERROR=1
+
+
+	required_field Description >/dev/null
+	[ "$?" -ne 0 ] && PKG_ERROR=1
+
+
+	section=`required_field Section`
+	[ "$?" -ne 0 ] && PKG_ERROR=1
+	if [ -z "$section" ]
+	    then
+	    echo >&2
+	    echo "Error: The Section field should have one of the following values:" >&2
+	    echo "Games, Multimedia, Communications, Settings, Utilies, Applications, Console, Misc" >&2
+	    echo >&2
+	fi
+
+	validateSection $section
+	if [ "$?" -ne 0 ]
+	    then
+	    PKG_ERROR=1
+	    echo "Error: The Section field should have one of the following values:" >&2
+	    echo "Games, Multimedia, Communications, Settings, Utilies, Applications, Console, Misc" >&2
+	fi
+
+	priority=`required_field Priority`
+	[ "$?" -ne 0 ] && PKG_ERROR=1
+	if [ -z "$priority" ]
+	    then
+	    echo >&2
+	    echo "Error: The Priority field should have one of the following values:" >&2
+	    echo "required, important, standard, optional, extra." >&2
+	    echo "If you don't know which priority value you should be using, then use \`optional'" >&2
+	    echo >&2
+	fi
+
+	validatePriority $priority
+	if [ "$?" -ne 0 ] 
+	    then
+	    PKG_ERROR=1
+	    echo >&2
+	    echo "Error: The Priority field should have one of the following values:" >&2
+	    echo "required, important, standard, optional, extra." >&2
+	    echo "If you don't know which priority value you should be using, then use \`optional'" >&2
+	    echo >&2
+	fi
+
+	if [ -z "$IPKG_NAME" ]
+	    then
+	    IPKG_NAME="${pkg}-${version}.ipk"
+	fi
+
+	if echo $IPKG_NAME | grep '[^a-z0-9.+-]'
+	    then
+	    echo >&2
+	    echo "Error: Package name $name contains illegal characters, (other than [a-z0-9.+-])" >&2
+	    echo >&2
+	    PKG_ERROR=1;
+	fi
+	
+	local bad_fields=`sed -ne 's/^\([^[:space:]][^:[:space:]]\+[[:space:]]\+\)[^:].*/\1/p' < $CONTROL_DIR/control | sed -e 's/\\n//'`
+	if [ -n "$bad_fields" ]; then
+	    echo >&2
+	    bad_fields=`echo $bad_fields`
+	    echo "Error: The following fields in $CONTROL_DIR/control are missing a ':'" >&2
+	    echo "	$bad_fields" >&2
+	    echo "ipkg-build: This may be due to a missing initial space for a multi-line field value" >&2
+	    echo >&2
+	    PKG_ERROR=1
+	fi
+
+	for script in $CONTROL_DIR/preinst $CONTROL_DIR/postinst $CONTROL_DIR/prerm $CONTROL_DIR/postrm; do
+	    if [ -f $script -a ! -x $script ]; then
+		echo >&2
+		echo "Error: package script $script is not executable" >&2
+		echo >&2
+		PKG_ERROR=1
+	    fi
+	done
+
+	if [ -f $CONTROL_DIR/conffiles ] 
+	    then
+		for cf in `cat $CONTROL_DIR/conffiles`; do
+		    if [ ! -f ./$cf ]; then
+			echo >&2
+			echo "Error: $CONTROL_DIR/conffiles mentions conffile $cf which does not exist" >&2
+			echo >&2
+			PKG_ERROR=1
+		    fi
+		done
+	fi
+
+	cd $owd
+
+	return $PKG_ERROR
+}
+
+##########################
+# Script main entry point
+##########################
+
+# Command line processing
+if [ "$#" -eq 0 ];then
+    printUsage
+    exit 0
+fi
+
+while getopts v:c:d:D:hn:qV Option
+do
+    case $Option in	
+	v ) vout "debian binary version=$OPTARG"
+	    DEBIAN_BINARY_VER=$OPTARG
+	;;
+	c ) vout "control directory=$OPTARG"
+	    CONTROL_DIR=$OPTARG
+	    USE_ALT_CONTROL="TRUE"
+	;;
+	d ) vout "package directory=$OPTARG"
+	    PACKAGE_DIR=$OPTARG
+	    if [ USE_ALT_CONTROL != "TRUE" ] 
+		then
+		CONTROL_DIR="$PACKAGE_DIR/CONTROL"
+	    fi
+	;;
+	D ) vout "output directory=$OPTARG"
+	    OUTPUT_DIR=$OPTARG
+	;;
+	n ) vout "package name=$OPTARG"
+	    IPKG_NAME=$OPTARG
+	;;
+	h) printUsage
+	   exit 0
+	;;
+	q) QUIET="TRUE"
+	   VERBOSE="FALSE"
+	;;
+	V) VERBOSE="TRUE"
+	    TAR_OPTS="-v"
+	;;
+	*) exit 0 # getopts outputs error message
+	;;
+    esac
+done
+
+vout "debian binary version=$DEBIAN_BINARY_VER"
+vout "control directory: $CONTROL_DIR"
+vout "data directory: $DATA_DIR"
+vout "package directory: $PACKAGE_DIR"
+vout "output directory: $OUTPUT_DIR"
+vout "package name: $IPKG_NAME"
+vout "verbose: $VERBOSE"
+
+# check for required directories
+mkDirs
+
+# check control files; create defaults if
+# they don't exist
+mkControls
+
+# Validate control file
+checkSanity $PACKAGE_DIR
+if [ "$?" -ne 0 ]
+    then
+    exitError "There were errors in $CONTROL_DIR/control; exiting" 2
+fi
+
+# assemble the package
+mkPackage
+
+# clean up
+cleanUp
+
+vout
+vout "done"
+vout
+
+exit 0
